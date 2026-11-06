@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>রেজিস্ট্রেশন | স্মার্ট লাইডার অ্যান্টি কলিশন হাইওয়ে সিস্টেম</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand">
+      <h1>স্মার্ট লাইডার অ্যান্টি কলিশন হাইওয়ে সিস্টেম</h1>
+      <p>কুয়াশায় সামনের বাধা শনাক্ত করে গাড়ি নিজে থেকে থামে, আর সবাইকে জানায়</p>
+    </div>
+    <nav>
+      <a href="index.html">ড্যাশবোর্ড</a>
+      <a class="on" href="register.html">রেজিস্ট্রেশন</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="cols">
+    <section class="card">
+      <h2>নতুন প্রাপক যোগ করুন</h2>
+      <p class="sub">দুর্ঘটনা ঘটলে এই ঠিকানাগুলোতে সময় ও জায়গাসহ ইমেল যাবে।</p>
+      <label for="nm">নাম</label>
+      <input id="nm" type="text" placeholder="যেমন: রহিম উদ্দিন">
+      <label for="em">ইমেল ঠিকানা</label>
+      <input id="em" type="email" placeholder="name@example.com">
+      <label for="rol">পরিচয়</label>
+      <select id="rol">
+        <option>চালক</option>
+        <option>ট্রাফিক পুলিশ</option>
+        <option>পুলিশের গাড়ি</option>
+      </select>
+      <div style="margin-top:16px"><button id="add" class="primary">রেজিস্ট্রেশন করুন</button></div>
+      <div id="note" class="note"></div>
+    </section>
+
+    <section class="card">
+      <h2>নিবন্ধিত প্রাপক</h2>
+      <p class="sub">এদের সবার কাছে সতর্কতা ইমেল যাবে।</p>
+      <div id="list"><div class="empty">এখনো কেউ নিবন্ধিত হয়নি।</div></div>
+    </section>
+  </div>
+</main>
+
+<script>
+// ====== Firebase Realtime Database লিংক (শেষে / দেবেন না) ======
+var DB = "https://fog-lidar-default-rtdb.asia-southeast1.firebasedatabase.app";
+// ================================================================
+
+var $ = function (i) { return document.getElementById(i); };
+var ROLES = ["চালক", "ট্রাফিক পুলিশ", "পুলিশের গাড়ি"];
+
+function say(text, err) {
+  var n = $("note");
+  n.textContent = text;
+  n.className = "note" + (err ? " err" : "");
+}
+
+function load() {
+  fetch(DB + "/recipients.json", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (o) {
+      o = o || {};
+      var box = $("list");
+      box.innerHTML = "";
+      var any = false;
+      ROLES.forEach(function (role) {
+        var ks = Object.keys(o).filter(function (k) { return o[k].role === role; });
+        if (!ks.length) return;
+        any = true;
+        var g = document.createElement("div"), h = document.createElement("h3");
+        g.className = "grp"; h.textContent = role;
+        g.appendChild(h);
+        ks.forEach(function (k) {
+          var r = o[k], row = document.createElement("div"), t = document.createElement("span"), b = document.createElement("button");
+          row.className = "rec";
+          t.textContent = (r.name ? r.name + " · " : "") + r.email;
+          b.textContent = "মুছুন";
+          b.onclick = function () {
+            if (!confirm(r.email + " কে তালিকা থেকে মুছবেন?")) return;
+            fetch(DB + "/recipients/" + k + ".json", { method: "DELETE" }).then(load);
+          };
+          row.appendChild(t); row.appendChild(b);
+          g.appendChild(row);
+        });
+        box.appendChild(g);
+      });
+      if (!any) box.innerHTML = '<div class="empty">এখনো কেউ নিবন্ধিত হয়নি।</div>';
+    })
+    .catch(function () { say("তালিকা আনা যায়নি, ইন্টারনেট দেখে আবার চেষ্টা করুন।", true); });
+}
+
+$("add").onclick = function () {
+  var e = $("em").value.trim(), n = $("nm").value.trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) { say("সঠিক ইমেল ঠিকানা লিখুন।", true); return; }
+  say("যোগ হচ্ছে...", false);
+  fetch(DB + "/recipients.json", {
+    method: "POST",
+    body: JSON.stringify({ name: n, email: e, role: $("rol").value })
+  }).then(function (r) {
+    if (!r.ok) throw new Error();
+    $("em").value = ""; $("nm").value = "";
+    say("রেজিস্ট্রেশন হয়েছে। এখন থেকে সতর্কতা ইমেল পাবেন।", false);
+    load();
+  }).catch(function () { say("যোগ করা যায়নি, আবার চেষ্টা করুন।", true); });
+};
+
+load();
+</script>
+</body>
+</html>
