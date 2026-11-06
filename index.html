@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>স্মার্ট লাইডার অ্যান্টি কলিশন হাইওয়ে সিস্টেম</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand">
+      <h1>স্মার্ট লাইডার অ্যান্টি কলিশন হাইওয়ে সিস্টেম</h1>
+      <p>কুয়াশায় সামনের বাধা শনাক্ত করে গাড়ি নিজে থেকে থামে, আর সবাইকে জানায়</p>
+    </div>
+    <nav>
+      <a class="on" href="index.html">ড্যাশবোর্ড</a>
+      <a href="register.html">রেজিস্ট্রেশন</a>
+    </nav>
+    <button id="snd" class="ghost">🔔 সাইরেন চালু করুন</button>
+  </div>
+</header>
+
+<div id="toast" hidden role="alert">
+  <h3>🚨 জরুরি সতর্কতা: দুর্ঘটনা ঘটেছে</h3>
+  <p id="t-text"></p>
+  <div class="row"><a id="t-map" href="#" target="_blank" hidden>ম্যাপে দেখুন</a><button id="t-close">বন্ধ করুন</button></div>
+</div>
+
+<main>
+  <div class="cols">
+    <section class="card" id="hero" data-s="off">
+      <span class="pill" id="pill">সংযোগ হচ্ছে</span>
+      <div class="read"><b id="dist">--</b><span id="unit"></span></div>
+      <div id="msg"></div>
+      <div class="lane"><div class="car">গাড়ি</div><div class="obs" id="obs" hidden></div></div>
+      <div class="scale"><span>০</span><span>৫০ সেমি</span><span>১০০ সেমি</span><span>১৫০+</span></div>
+      <div class="facts">
+        <div class="fact"><small>অবস্থান</small><b id="f-loc">--</b></div>
+        <div class="fact"><small>সর্বশেষ আপডেট</small><b id="f-time">--</b></div>
+        <div class="fact"><small>গাড়ির সংযোগ</small><b id="f-conn">--</b></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>থেমে যাওয়ার ঘটনা</h2>
+      <p class="sub">ট্রাফিক পুলিশের জন্য সর্বশেষ ঘটনাগুলো</p>
+      <div id="events"><div class="empty">এখনো কোনো ঘটনা নেই।</div></div>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:18px">
+    <h2>লাইভ ম্যাপ</h2>
+    <p class="sub" id="mapnote">গাড়ির অবস্থান আর থেমে যাওয়ার জায়গা ম্যাপে দেখা যাবে।</p>
+    <div id="map"></div>
+  </section>
+</main>
+
+<script>
+// ====== Firebase Realtime Database লিংক (শেষে / দেবেন না) ======
+var DB = "https://fog-lidar-default-rtdb.asia-southeast1.firebasedatabase.app";
+// ================================================================
+
+var $ = function (i) { return document.getElementById(i); };
+var TZ = { timeZone: "Asia/Dhaka" };
+function fmtTime(ts) { return new Date(ts).toLocaleTimeString("bn-BD", TZ); }
+function fmtFull(ts) {
+  return new Date(ts).toLocaleString("bn-BD", { timeZone: "Asia/Dhaka", day: "numeric", month: "long", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+function fmtCm(v) { return Number(v).toLocaleString("bn-BD", { minimumFractionDigits: 1, maximumFractionDigits: 1 }); }
+function mapUrl(a) { return (a.lat && a.lng) ? "https://www.google.com/maps?q=" + a.lat + "," + a.lng : ""; }
+
+// ---- সাইরেন ----
+var siren = false, ctx = null;
+function audio() {
+  ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+  if (ctx.resume) ctx.resume();
+}
+function beep() {
+  if (!siren) return;
+  audio();
+  var o = ctx.createOscillator(), g = ctx.createGain();
+  o.connect(g); g.connect(ctx.destination);
+  o.frequency.value = 880; g.gain.value = 0.25;
+  o.start(); o.stop(ctx.currentTime + 0.45);
+}
+$("snd").onclick = function () {
+  siren = !siren;
+  if (siren) { audio(); beep(); }
+  $("snd").textContent = siren ? "🔔 সাইরেন চালু আছে" : "🔔 সাইরেন চালু করুন";
+};
+
+// ---- লাইভ অবস্থা ----
+var lastUpd = null, lastChange = Date.now();
+function setOffline(msg) {
+  $("hero").dataset.s = "off";
+  $("pill").textContent = "অফলাইন";
+  $("dist").textContent = "--"; $("unit").textContent = "";
+  $("msg").textContent = msg;
+  $("obs").hidden = true;
+  $("f-conn").textContent = "ডেটা আসছে না";
+}
+function live() {
+  fetch(DB + "/car.json", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j) { setOffline("এখনো গাড়ি থেকে কোনো ডেটা আসেনি।"); return; }
+      if (j.updated !== lastUpd) { lastUpd = j.updated; lastChange = Date.now(); }
+      if (Date.now() - lastChange > 8000) { setOffline("গাড়ি অফলাইন, নতুন ডেটা আসছে না।"); return; }
+      if (j.sensor_ok === false) { setOffline("সেন্সর থেকে ডেটা আসছে না।"); return; }
+      var s = j.state, none = j.distance_cm < 0;
+      $("hero").dataset.s = s;
+      $("pill").textContent = ["নিরাপদ", "সতর্কতা", "বিপদ: গাড়ি থেমেছে"][s];
+      $("dist").textContent = none ? "বাধা নেই" : fmtCm(j.distance_cm);
+      $("unit").textContent = none ? "" : "সেমি";
+      $("msg").textContent = ["সামনের পথ পরিষ্কার।", "সামনে বাধা আছে, গাড়ি গতি কমাচ্ছে।", "সামনে বাধা, গাড়ি স্বয়ংক্রিয়ভাবে ব্রেক করে থেমেছে।"][s];
+      var obs = $("obs");
+      obs.hidden = none;
+      obs.style.left = (16 + Math.min(j.distance_cm, 150) / 150 * 74) + "%";
+      $("f-loc").textContent = j.location;
+      $("f-time").textContent = fmtTime(j.updated);
+      $("f-conn").textContent = "সংযুক্ত";
+      updateMap(j);
+    })
+    .catch(function () { setOffline("ইন্টারনেট বা ডেটাবেসের সাথে সংযোগ নেই।"); })
+    .then(function () { setTimeout(live, 1000); });
+}
+
+// ---- লাইভ ম্যাপ (OpenStreetMap) ----
+var map = null, carMk = null, accLayer = null, accSeen = {};
+var COL = ["#1f9d6b", "#d98e04", "#d62839"];
+function ensureMap(lat, lng) {
+  if (map || typeof L === "undefined") return;
+  map = L.map("map").setView([lat, lng], 15);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(map);
+  accLayer = L.layerGroup().addTo(map);
+}
+function pop(title, line) {
+  var d = document.createElement("div"), b = document.createElement("b");
+  b.textContent = title;
+  d.appendChild(b);
+  d.appendChild(document.createElement("br"));
+  d.appendChild(document.createTextNode(line));
+  return d;
+}
+function updateMap(j) {
+  if (!(j.lat && j.lng)) {
+    $("mapnote").textContent = "অবস্থানের স্থানাঙ্ক (LAT, LNG) এখনো দেওয়া হয়নি, তাই ম্যাপ দেখানো যাচ্ছে না।";
+    return;
+  }
+  ensureMap(j.lat, j.lng);
+  if (!map) { $("mapnote").textContent = "ম্যাপ লোড করতে ইন্টারনেট লাগবে।"; return; }
+  $("mapnote").textContent = "বড় বৃত্ত গাড়ির বর্তমান অবস্থান (রঙ অবস্থা বোঝায়), ছোট লাল চিহ্ন আগের থেমে যাওয়ার জায়গা।";
+  var pos = [j.lat, j.lng], st = ["নিরাপদ", "সতর্কতা", "বিপদ: গাড়ি থেমেছে"][j.state];
+  if (!carMk) {
+    carMk = L.circleMarker(pos, { radius: 12, weight: 3, color: "#fff", fillOpacity: 1, fillColor: COL[j.state] }).addTo(map);
+  } else {
+    carMk.setLatLng(pos);
+    carMk.setStyle({ fillColor: COL[j.state] });
+  }
+  carMk.bindPopup(pop(j.location, st));
+}
+function markAlerts(o) {
+  if (!map) return;
+  Object.keys(o).forEach(function (k) {
+    var a = o[k];
+    if (accSeen[k] || !(a.lat && a.lng)) return;
+    accSeen[k] = true;
+    L.circleMarker([a.lat, a.lng], { radius: 8, weight: 2, color: "#fff", fillColor: "#d62839", fillOpacity: 1 })
+      .bindPopup(pop(a.location, fmtFull(a.updated))).addTo(accLayer);
+  });
+}
+
+// ---- ভেসে ওঠা লাল সতর্কতা ----
+function showAlert(a) {
+  $("t-text").textContent = a.location + " এলাকায় গাড়ি বাধায় থেমে গেছে। সময়: " + fmtFull(a.updated) +
+    "। বাধার দূরত্ব: " + fmtCm(a.distance_cm) + " সেমি।";
+  var m = mapUrl(a);
+  $("t-map").hidden = !m;
+  if (m) $("t-map").href = m;
+  $("toast").hidden = false;
+  beep(); setTimeout(beep, 700); setTimeout(beep, 1400);
+}
+$("t-close").onclick = function () { $("toast").hidden = true; };
+
+// ---- ঘটনার তালিকা ----
+var seen = null;
+function alerts() {
+  var url = DB + "/alerts.json?orderBy=" + encodeURIComponent('"$key"') + "&limitToLast=10";
+  fetch(url, { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (o) {
+      o = o || {};
+      var keys = Object.keys(o).sort().reverse();
+      var box = $("events");
+      box.innerHTML = "";
+      if (!keys.length) box.innerHTML = '<div class="empty">এখনো কোনো ঘটনা নেই।</div>';
+      keys.forEach(function (k) {
+        var a = o[k], d = document.createElement("div"), b = document.createElement("b"), s = document.createElement("span");
+        d.className = "ev";
+        b.textContent = a.location;
+        s.textContent = fmtFull(a.updated) + " · বাধা " + fmtCm(a.distance_cm) + " সেমি দূরে";
+        d.appendChild(b); d.appendChild(s);
+        var m = mapUrl(a);
+        if (m) {
+          var l = document.createElement("a");
+          l.href = m; l.target = "_blank"; l.textContent = " ম্যাপে দেখুন";
+          d.appendChild(l);
+        }
+        box.appendChild(d);
+      });
+      if (seen === null) {
+        seen = {};                         // প্রথমবার খুললে পুরনো ঘটনায় সতর্কতা ভেসে উঠবে না
+      } else {
+        keys.slice().reverse().forEach(function (k) { if (!seen[k]) showAlert(o[k]); });
+      }
+      keys.forEach(function (k) { seen[k] = true; });
+      markAlerts(o);
+    })
+    .catch(function () {})
+    .then(function () { setTimeout(alerts, 2000); });
+}
+
+live();
+alerts();
+</script>
+</body>
+</html>
