@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>স্মার্ট লাইডার কন্ট্রোল রুম</title>
+<style>
+body{margin:0;font-family:sans-serif;background:#0f172a;color:#fff}
+header{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 16px;background:#1e293b;flex-wrap:wrap}
+header b{font-size:17px}
+button{border:0;border-radius:8px;padding:8px 12px;font-size:14px;cursor:pointer}
+main{max-width:760px;margin:0 auto;padding:12px}
+#card{padding:24px;border-radius:16px;background:#64748b;text-align:center;transition:background .3s}
+#dist{font-size:60px;font-weight:700}
+#st{font-size:22px;margin-top:4px}
+#bar{height:14px;background:#0004;border-radius:7px;margin-top:16px;overflow:hidden}
+#fill{height:100%;background:#fff;width:0;transition:width .3s}
+#info{text-align:center;opacity:.8;font-size:13px;margin:8px}
+#alert{background:#dc2626;border-radius:12px;padding:14px;margin-bottom:12px;animation:b 1s infinite}
+@keyframes b{50%{background:#7f1d1d}}
+h3{margin:20px 0 8px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:8px;border-bottom:1px solid #334155;text-align:left}
+.wrap{overflow-x:auto}
+</style>
+</head>
+<body>
+<header>
+  <b>🚗 স্মার্ট লাইডার অ্যান্টি কলিশন — কন্ট্রোল রুম</b>
+  <button id="snd">🔔 সাইরেন চালু করুন</button>
+</header>
+<main>
+  <div id="alert" hidden></div>
+  <div id="card">
+    <div id="dist">--</div>
+    <div id="st">সংযোগ হচ্ছে...</div>
+    <div id="bar"><div id="fill"></div></div>
+  </div>
+  <div id="info"></div>
+  <h3>ইমেল প্রাপক (এখানে ঠিকানা দিলেই সতর্কতা যাবে)</h3>
+  <div style="display:flex;gap:6px;flex-wrap:wrap">
+    <input id="em" type="email" placeholder="ইমেল ঠিকানা" style="flex:1;min-width:180px;padding:8px;border-radius:8px;border:0">
+    <select id="rol" style="padding:8px;border-radius:8px;border:0">
+      <option>চালক</option><option>ট্রাফিক পুলিশ</option><option>পুলিশের গাড়ি</option>
+    </select>
+    <button id="add" style="background:#16a34a;color:#fff">যোগ করুন</button>
+  </div>
+  <ul id="rl" style="padding-left:18px;font-size:14px"></ul>
+
+  <h3>থেমে যাওয়ার ঘটনার তালিকা (ট্রাফিক পুলিশ ডেটা)</h3>
+  <div class="wrap">
+    <table>
+      <thead><tr><th>সময়</th><th>অবস্থান</th><th>দূরত্ব</th><th>কারণ</th></tr></thead>
+      <tbody id="tb"></tbody>
+    </table>
+  </div>
+</main>
+<script>
+// ====== শুধু এই লাইনটা বদলাবেন: Firebase Realtime Database-এর লিংক (শেষে / দেবেন না) ======
+var DB = "https://fog-lidar-default-rtdb.asia-southeast1.firebasedatabase.app";
+// ==========================================================================================
+
+var $ = function (i) { return document.getElementById(i); };
+var siren = false, ctx = null;
+var lastUpd = null, lastChange = Date.now();
+var seen = null;
+
+function audio() {
+  ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+  if (ctx.resume) ctx.resume();
+}
+function beep() {
+  if (!siren) return;
+  audio();
+  var o = ctx.createOscillator(), g = ctx.createGain();
+  o.connect(g); g.connect(ctx.destination);
+  o.frequency.value = 880; g.gain.value = 0.25;
+  o.start(); o.stop(ctx.currentTime + 0.5);
+}
+$("snd").onclick = function () {
+  siren = true; audio(); beep();
+  $("snd").textContent = "🔔 সাইরেন চালু আছে";
+};
+
+function setOffline(msg) {
+  $("card").style.background = "#64748b";
+  $("dist").textContent = "--";
+  $("st").textContent = msg;
+  $("fill").style.width = "0";
+}
+
+function live() {
+  fetch(DB + "/car.json", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j) { setOffline("এখনো কোনো ডেটা আসেনি"); return; }
+      if (j.updated !== lastUpd) { lastUpd = j.updated; lastChange = Date.now(); }
+      if (Date.now() - lastChange > 8000) { setOffline("গাড়ি অফলাইন (ডেটা আসছে না)"); return; }
+      var s = j.state;
+      $("card").style.background = ["#16a34a", "#ca8a04", "#dc2626"][s];
+      $("dist").textContent = j.distance_cm < 0 ? "বাধা নেই" : j.distance_cm.toFixed(1) + " সেমি";
+      $("st").textContent = ["নিরাপদ", "সতর্কতা: সামনে বাধা, গতি কমছে", "বিপদ! গাড়ি থেমে গেছে"][s];
+      $("fill").style.width = (j.distance_cm < 0 ? 0 : Math.max(0, 100 - j.distance_cm * 10 / 15)) + "%";
+      $("info").textContent = "অবস্থান: " + j.location + " | সর্বশেষ আপডেট: " + new Date(j.updated).toLocaleTimeString();
+    })
+    .catch(function () { setOffline("ইন্টারনেট/ডেটাবেসের সাথে সংযোগ নেই"); })
+    .then(function () { setTimeout(live, 1000); });
+}
+
+function cell(tr, text) {
+  var td = document.createElement("td");
+  td.textContent = text;
+  tr.appendChild(td);
+}
+
+function locCell(tr, a) {
+  var td = document.createElement("td");
+  if (a.lat && a.lng) {
+    var l = document.createElement("a");
+    l.href = "https://www.google.com/maps?q=" + a.lat + "," + a.lng;
+    l.target = "_blank";
+    l.style.color = "#93c5fd";
+    l.textContent = a.location + " 📍";
+    td.appendChild(l);
+  } else {
+    td.textContent = a.location;
+  }
+  tr.appendChild(td);
+}
+
+function alerts() {
+  var url = DB + "/alerts.json?orderBy=" + encodeURIComponent('"$key"') + "&limitToLast=10";
+  fetch(url, { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (o) {
+      o = o || {};
+      var keys = Object.keys(o).sort().reverse();
+      var tb = $("tb");
+      tb.innerHTML = "";
+      keys.forEach(function (k) {
+        var a = o[k], tr = document.createElement("tr");
+        cell(tr, new Date(a.updated).toLocaleString());
+        locCell(tr, a);
+        cell(tr, a.distance_cm.toFixed(1) + " সেমি");
+        cell(tr, "সামনে বাধা, গাড়ি স্বয়ংক্রিয়ভাবে থেমেছে");
+        tb.appendChild(tr);
+      });
+      if (seen === null) {
+        seen = {};                      // প্রথমবার: পুরনো ঘটনায় সাইরেন বাজবে না
+      } else {
+        keys.forEach(function (k) {
+          if (!seen[k]) {
+            var a = o[k], el = $("alert");
+            el.hidden = false;
+            el.textContent = "🚨 জরুরি! " + a.location + " এ বাধার কারণে গাড়ি থেমে গেছে (" +
+              a.distance_cm.toFixed(1) + " সেমি দূরে বাধা)। সময়: " + new Date(a.updated).toLocaleTimeString() +
+              " — বন্ধ করতে এখানে চাপুন";
+            beep(); setTimeout(beep, 700); setTimeout(beep, 1400);
+          }
+        });
+      }
+      keys.forEach(function (k) { seen[k] = true; });
+    })
+    .catch(function () {})
+    .then(function () { setTimeout(alerts, 2000); });
+}
+$("alert").onclick = function () { $("alert").hidden = true; };
+
+function loadRec() {
+  fetch(DB + "/recipients.json", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (o) {
+      var ul = $("rl");
+      ul.innerHTML = "";
+      Object.keys(o || {}).forEach(function (k) {
+        var r = o[k], li = document.createElement("li");
+        li.textContent = r.role + ": " + r.email + " ";
+        var b = document.createElement("button");
+        b.textContent = "✕";
+        b.onclick = function () {
+          fetch(DB + "/recipients/" + k + ".json", { method: "DELETE" }).then(loadRec);
+        };
+        li.appendChild(b);
+        ul.appendChild(li);
+      });
+    })
+    .catch(function () {});
+}
+$("add").onclick = function () {
+  var e = $("em").value.trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) { alert("সঠিক ইমেল ঠিকানা দিন"); return; }
+  fetch(DB + "/recipients.json", {
+    method: "POST",
+    body: JSON.stringify({ email: e, role: $("rol").value })
+  }).then(function () { $("em").value = ""; loadRec(); });
+};
+
+loadRec();
+live();
+alerts();
+</script>
+</body>
+</html>
